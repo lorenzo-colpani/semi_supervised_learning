@@ -140,6 +140,7 @@ def objective_normal(trial):
         nested=True,
         run_name=f"trial_{trial.number}",
     ):
+        trial.set_user_attr("run_id", mlflow.active_run().info.run_id)
         params = {
             "batch_size_train": trial.suggest_categorical(
                 "batch_size_train", [16, 32, 64, 128, 256, 512, 1024]
@@ -152,19 +153,23 @@ def objective_normal(trial):
             "mlflow.note.content",
             f"Trial {trial.number}: Hyperparameter optimization run exploring different learning rates, batch sizes and epochs.",
         )
+        device = (
+            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        )
         train_loader, val_loader, _, _ = load_data(params["batch_size_train"])
         input_size = 4
         output_size = 3
         model = SimpleNN(input_size, output_size)
         loss_function = nn.CrossEntropyLoss()
         optimizer = optim.Adam(model.parameters(), lr=params["lr"])
-
+        model.to(device)
         for epoch in range(params["num_epochs"]):
             # Training
             model.train()
             correct_train = 0
             total_train = 0
             for inputs, labels in train_loader:
+                inputs, labels = inputs.to(device), labels.to(device)
                 optimizer.zero_grad()
                 outputs = model(inputs)
                 _, predicted_train = torch.max(outputs.data, 1)
@@ -181,6 +186,10 @@ def objective_normal(trial):
             total_val = 0
             with torch.no_grad():
                 for val_inputs, val_labels in val_loader:
+                    val_inputs, val_labels = (
+                        val_inputs.to(device),
+                        val_labels.to(device),
+                    )
                     val_outputs = model(val_inputs)
                     _, predicted_val = torch.max(val_outputs.data, 1)
                     total_val += val_labels.size(0)
@@ -196,18 +205,33 @@ def objective_normal(trial):
 
         mlflow.log_metric("train accuracy", train_accuracy)
         mlflow.log_metric("validation accuracy", validation_accuracy)
-        if study.best_value is None or validation_accuracy > study.best_value:
-            signature = infer_signature(
-                inputs.detach().numpy(), outputs.detach().numpy()
-            )
-            mlflow.pytorch.log_model(
-                pytorch_model=model,
-                name="model",
-                signature=signature,
-                registered_model_name="SupervisedIrisModel",
-            )
+        signature = infer_signature(
+            inputs.detach().cpu().numpy(), outputs.detach().cpu().numpy()
+        )
+        mlflow.pytorch.log_model(
+            pytorch_model=model,
+            name="model",
+            signature=signature,
+        )
 
         return validation_accuracy
+
+
+def champion_callback(study, trial):
+    # Check if the trial is the new champion (best trial overall)
+    # This check is safe because it's run *after* the trial is finished
+    if trial.number == study.best_trial.number:
+        print(f"Trial {trial.number} is the new champion with value: {trial.value}")
+
+        # Get the run ID of the champion trial from its user attributes
+        run_id = trial.user_attrs["run_id"]
+
+        # Define the URI for the logged model artifact
+        logged_model_uri = f"runs:/{run_id}/model"
+
+        # Register this specific model artifact to the MLflow Model Registry
+        mlflow.register_model(model_uri=logged_model_uri, name="SupervisedIrisModel")
+        print("Champion model registered to the MLflow Model Registry.")
 
 
 def update_teacher_weights(student_model, teacher_model, alpha=0.99):
@@ -320,7 +344,7 @@ study = optuna.create_study(
 
 # Start the optimization. Optuna will run the objective function 100 times.
 with mlflow.start_run(run_name=study_name):
-    study.optimize(objective_normal, n_trials=100, n_jobs=2)
+    study.optimize(objective_normal, n_trials=100, callbacks=[champion_callback])
     mlflow.log_metric("best_accuracy_validation", study.best_value)
     mlflow.set_tags(
         tags={
