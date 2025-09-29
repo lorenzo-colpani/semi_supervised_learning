@@ -9,6 +9,7 @@ dependencies = [
     "matplotlib>=3.10.6",
     "mlflow>=3.4.0",
     "optuna>=4.5.0",
+    "optuna-integration>=4.5.0",
     "pip>=25.2",
     "plotly>=6.3.0",
     "scikit-learn>=1.7.2",

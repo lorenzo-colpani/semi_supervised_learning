@@ -1,0 +1,14 @@
+artifact_uri: mlflow-artifacts:/0/85fb3b1c541249fea3e495a7ba8066bb/artifacts
+end_time: 1759170788599
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 85fb3b1c541249fea3e495a7ba8066bb
+run_name: hyperparameter-sweep
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1759170788584
+status: 4
+tags: []
+user_id: lorenzo
