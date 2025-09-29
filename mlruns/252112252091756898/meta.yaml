@@ -1,6 +1,0 @@
-artifact_location: mlflow-artifacts:/252112252091756898
-creation_time: 1759168804995
-experiment_id: '252112252091756898'
-last_update_time: 1759168804995
-lifecycle_stage: active
-name: mean teacher

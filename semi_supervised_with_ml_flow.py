@@ -11,7 +11,7 @@ from optuna.pruners import MedianPruner
 from sklearn.datasets import load_iris
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
-from optuna.integration import MLflowCallback
+from mlflow.optuna.storage import MlflowStorage
 
 mlflow.set_tracking_uri("http://localhost:8080")
 
@@ -35,6 +35,47 @@ def get_or_create_experiment(experiment_name):
         return experiment.experiment_id
     else:
         return mlflow.create_experiment(experiment_name)
+
+
+experiment_id = get_or_create_experiment("mean_teacher_iris_experiment")
+mlflow.set_experiment(experiment_id=experiment_id)
+mlflow_storage = MlflowStorage(experiment_id=experiment_id)
+
+# override Optuna's default logging to ERROR only
+optuna.logging.set_verbosity(optuna.logging.ERROR)
+
+# define a logging callback that will report on only new challenger parameter configurations if a
+# trial has usurped the state of 'best conditions'
+
+
+def champion_callback(study, frozen_trial):
+    """
+    Logging callback that will report when a new trial iteration improves upon existing
+    best trial values.
+
+    Note: This callback is not intended for use in distributed computing systems such as Spark
+    or Ray due to the micro-batch iterative implementation for distributing trials to a cluster's
+    workers or agents.
+    The race conditions with file system state management for distributed trials will render
+    inconsistent values with this callback.
+    """
+
+    winner = study.user_attrs.get("winner", None)
+
+    if study.best_value and winner != study.best_value:
+        study.set_user_attr("winner", study.best_value)
+        if winner:
+            improvement_percent = (
+                abs(winner - study.best_value) / study.best_value
+            ) * 100
+            print(
+                f"Trial {frozen_trial.number} achieved value: {frozen_trial.value} with "
+                f"{improvement_percent: .4f}% improvement"
+            )
+        else:
+            print(
+                f"Initial trial {frozen_trial.number} achieved value: {frozen_trial.value}"
+            )
 
 
 def add_gaussian_noise(data_tensor, std=0.1):
@@ -89,65 +130,65 @@ def load_data(train_batch: int):
     return train_loader, val_loader, test_loader, unlabeled_loader
 
 
-mlflow.set_tracking_uri("http://localhost:8080")
-experiment_id = get_or_create_experiment("mean_teacher_iris_experiment")
-mlflow.set_experiment("mean_teacher_iris_experiment")
-
 # Apply the decorator to your objective function
 
 
 def objective_normal(trial):
-    params = {
-        "batch_size_train": trial.suggest_categorical(
-            "batch_size_train", [16, 32, 64, 128, 256, 512, 1024]
-        ),
-        "lr": trial.suggest_float("lr", 1e-5, 1e-1, log=True),
-        "num_epochs": trial.suggest_int("num_epochs", 50, 500),
-    }
-    train_loader, val_loader, _, _ = load_data(params["batch_size_train"])
-    input_size = 4
-    output_size = 3
-    model = SimpleNN(input_size, output_size)
-    loss_function = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=params["lr"])
+    with mlflow.start_run(nested=True, run_name=f"trial_{trial.number}"):
+        params = {
+            "batch_size_train": trial.suggest_categorical(
+                "batch_size_train", [16, 32, 64, 128, 256, 512, 1024]
+            ),
+            "lr": trial.suggest_float("lr", 1e-5, 1e-1, log=True),
+            "num_epochs": trial.suggest_int("num_epochs", 50, 500),
+        }
+        mlflow.log_params(params)
+        train_loader, val_loader, _, _ = load_data(params["batch_size_train"])
+        input_size = 4
+        output_size = 3
+        model = SimpleNN(input_size, output_size)
+        loss_function = nn.CrossEntropyLoss()
+        optimizer = optim.Adam(model.parameters(), lr=params["lr"])
 
-    for epoch in range(params["num_epochs"]):
-        # Training
-        model.train()
-        correct_train = 0
-        total_train = 0
-        for inputs, labels in train_loader:
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            _, predicted_train = torch.max(outputs.data, 1)
-            total_train += labels.size(0)
-            correct_train += (predicted_train == labels).sum().item()
-            loss = loss_function(outputs, labels)
-            loss.backward()
-            optimizer.step()
-        train_accuracy = correct_train / total_train
+        for epoch in range(params["num_epochs"]):
+            # Training
+            model.train()
+            correct_train = 0
+            total_train = 0
+            for inputs, labels in train_loader:
+                optimizer.zero_grad()
+                outputs = model(inputs)
+                _, predicted_train = torch.max(outputs.data, 1)
+                total_train += labels.size(0)
+                correct_train += (predicted_train == labels).sum().item()
+                loss = loss_function(outputs, labels)
+                loss.backward()
+                optimizer.step()
+            train_accuracy = correct_train / total_train
 
-        # Evaluate on validation set
-        model.eval()
-        correct_val = 0
-        total_val = 0
-        with torch.no_grad():
-            for val_inputs, val_labels in val_loader:
-                val_outputs = model(val_inputs)
-                _, predicted_val = torch.max(val_outputs.data, 1)
-                total_val += val_labels.size(0)
-                correct_val += (predicted_val == val_labels).sum().item()
-        validation_accuracy = correct_val / total_val
-        trial.report(validation_accuracy, epoch)
+            # Evaluate on validation set
+            model.eval()
+            correct_val = 0
+            total_val = 0
+            with torch.no_grad():
+                for val_inputs, val_labels in val_loader:
+                    val_outputs = model(val_inputs)
+                    _, predicted_val = torch.max(val_outputs.data, 1)
+                    total_val += val_labels.size(0)
+                    correct_val += (predicted_val == val_labels).sum().item()
+            validation_accuracy = correct_val / total_val
+            trial.report(validation_accuracy, epoch)
 
-        if trial.should_prune():
-            raise optuna.TrialPruned()
+            if trial.should_prune():
+                mlflow.log_metric("train accuracy", train_accuracy)
+                mlflow.log_metric("validation accuracy", validation_accuracy)
+                mlflow.end_run(status="KILLED")
+                raise optuna.TrialPruned()
 
-    mlflow.log_params(params)
-    mlflow.log_metric("train accuracy", train_accuracy)
-    # mlflow.log_metric('validation accuracy', validation_accuracy)
+        mlflow.log_metric("train accuracy", train_accuracy)
+        mlflow.log_metric("validation accuracy", validation_accuracy)
 
-    return validation_accuracy
+        return validation_accuracy
 
 
 def update_teacher_weights(student_model, teacher_model, alpha=0.99):
@@ -253,22 +294,14 @@ pruner = MedianPruner(n_startup_trials=5, n_warmup_steps=30, interval_steps=10)
 study = optuna.create_study(
     direction="maximize",
     pruner=pruner,
-    storage=storage_name,
+    storage=mlflow_storage,
     study_name=study_name,
     load_if_exists=True,
 )
 
 # Start the optimization. Optuna will run the objective function 100 times.
 with mlflow.start_run(run_name="hyperparameter-sweep") as parent_run:
-    parent_run_id = parent_run.info.run_id
-    mlflow_callback = MLflowCallback(
-        tracking_uri=mlflow.get_tracking_uri(),
-        metric_name="validation_accuracy",
-        mlflow_kwargs={"nested": True, "parent_run_id": parent_run_id},
-    )
-    decorator_objective_fn = mlflow_callback.track_in_mlflow()
-    new_objective_fn = decorator_objective_fn(objective_normal)
-    study.optimize(new_objective_fn, n_trials=10, callbacks=[mlflow_callback])
+    study.optimize(objective_normal, n_trials=10, callbacks=[champion_callback])
 
     mlflow.log_params(study.best_params)
     mlflow.log_metric("best_accuracy_validation", study.best_value)
@@ -276,7 +309,7 @@ with mlflow.start_run(run_name="hyperparameter-sweep") as parent_run:
     # Log tags
     mlflow.set_tags(
         tags={
-            "project": "Mean Teacher",
+            "project": "Mean Teacher supervised model",
             "optimizer_engine": "optuna",
             "model_family": "pytorch",
             "feature_set_version": 1,

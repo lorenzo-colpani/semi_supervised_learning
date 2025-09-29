@@ -1,6 +1,0 @@
-artifact_location: mlflow-artifacts:/923788924553387472
-creation_time: 1759168805826
-experiment_id: '923788924553387472'
-last_update_time: 1759168805826
-lifecycle_stage: active
-name: supervised_iris_study
