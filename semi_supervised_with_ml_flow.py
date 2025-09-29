@@ -1,4 +1,5 @@
 import copy
+from inspect import signature
 from itertools import cycle
 
 import mlflow
@@ -12,6 +13,7 @@ from sklearn.datasets import load_iris
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
 from mlflow.optuna.storage import MlflowStorage
+from mlflow.models import infer_signature
 
 mlflow.set_tracking_uri("http://localhost:8080")
 
@@ -37,7 +39,7 @@ def get_or_create_experiment(experiment_name):
         return mlflow.create_experiment(experiment_name)
 
 
-experiment_id = get_or_create_experiment("mean_teacher_iris_experiment")
+experiment_id = get_or_create_experiment("mean_teacher_iris_supervised")
 mlflow.set_experiment(experiment_id=experiment_id)
 mlflow_storage = MlflowStorage(experiment_id=experiment_id)
 
@@ -134,7 +136,10 @@ def load_data(train_batch: int):
 
 
 def objective_normal(trial):
-    with mlflow.start_run(nested=True, run_name=f"trial_{trial.number}"):
+    with mlflow.start_run(
+        nested=True,
+        run_name=f"trial_{trial.number}",
+    ):
         params = {
             "batch_size_train": trial.suggest_categorical(
                 "batch_size_train", [16, 32, 64, 128, 256, 512, 1024]
@@ -143,6 +148,7 @@ def objective_normal(trial):
             "num_epochs": trial.suggest_int("num_epochs", 50, 500),
         }
         mlflow.log_params(params)
+        mlflow.set_tag("mlflow.note.content", f"Trial {trial.number}: Hyperparameter optimization run exploring different learning rates, batch sizes and epochs.")
         train_loader, val_loader, _, _ = load_data(params["batch_size_train"])
         input_size = 4
         output_size = 3
@@ -187,6 +193,16 @@ def objective_normal(trial):
 
         mlflow.log_metric("train accuracy", train_accuracy)
         mlflow.log_metric("validation accuracy", validation_accuracy)
+        if study.best_value is None or validation_accuracy > study.best_value:
+            signature = infer_signature(
+                inputs.detach().numpy(), outputs.detach().numpy()
+            )
+            mlflow.pytorch.log_model(
+                pytorch_model=model,
+                name="model",
+                signature=signature,
+                registered_model_name="SupervisedIrisModel",
+            )
 
         return validation_accuracy
 
@@ -294,25 +310,28 @@ pruner = MedianPruner(n_startup_trials=5, n_warmup_steps=30, interval_steps=10)
 study = optuna.create_study(
     direction="maximize",
     pruner=pruner,
-    storage=mlflow_storage,
+    storage=storage_name,
     study_name=study_name,
     load_if_exists=True,
 )
 
 # Start the optimization. Optuna will run the objective function 100 times.
-with mlflow.start_run(run_name="hyperparameter-sweep") as parent_run:
-    study.optimize(objective_normal, n_trials=10, callbacks=[champion_callback])
+with mlflow.start_run(run_name=study_name):
+    study.optimize(objective_normal, n_trials=100, n_jobs=8)
 
     mlflow.log_params(study.best_params)
     mlflow.log_metric("best_accuracy_validation", study.best_value)
-
-    # Log tags
     mlflow.set_tags(
         tags={
-            "project": "Mean Teacher supervised model",
+            "model": "SupervisedIrisModel",
+            "dataset": "Iris",
+            "task": "classification",
+            "framework": "pytorch",
+            "training_approach": "supervised",
             "optimizer_engine": "optuna",
-            "model_family": "pytorch",
-            "feature_set_version": 1,
+            "best_trial_number": study.best_trial.number,
+            "mlflow.note.content":f"Hyperparameter optimization run exploring different learning rates, batch sizes and epochs for the label dataset.")
+        
         }
     )
 
@@ -327,4 +346,3 @@ with mlflow.start_run(run_name="hyperparameter-sweep") as parent_run:
 # )
 
 # model_uri = mlflow.get_artifac_uri(artifact_path)
-
