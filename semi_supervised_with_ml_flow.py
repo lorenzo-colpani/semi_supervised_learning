@@ -148,7 +148,10 @@ def objective_normal(trial):
             "num_epochs": trial.suggest_int("num_epochs", 50, 500),
         }
         mlflow.log_params(params)
-        mlflow.set_tag("mlflow.note.content", f"Trial {trial.number}: Hyperparameter optimization run exploring different learning rates, batch sizes and epochs.")
+        mlflow.set_tag(
+            "mlflow.note.content",
+            f"Trial {trial.number}: Hyperparameter optimization run exploring different learning rates, batch sizes and epochs.",
+        )
         train_loader, val_loader, _, _ = load_data(params["batch_size_train"])
         input_size = 4
         output_size = 3
@@ -317,9 +320,7 @@ study = optuna.create_study(
 
 # Start the optimization. Optuna will run the objective function 100 times.
 with mlflow.start_run(run_name=study_name):
-    study.optimize(objective_normal, n_trials=100, n_jobs=8)
-
-    mlflow.log_params(study.best_params)
+    study.optimize(objective_normal, n_trials=100, n_jobs=2)
     mlflow.log_metric("best_accuracy_validation", study.best_value)
     mlflow.set_tags(
         tags={
@@ -330,8 +331,7 @@ with mlflow.start_run(run_name=study_name):
             "training_approach": "supervised",
             "optimizer_engine": "optuna",
             "best_trial_number": study.best_trial.number,
-            "mlflow.note.content":f"Hyperparameter optimization run exploring different learning rates, batch sizes and epochs for the label dataset.")
-        
+            "mlflow.note.content": "Hyperparameter optimization run exploring different learning rates, batch sizes and epochs for the label dataset.",
         }
     )
 
