@@ -355,9 +355,14 @@ with mlflow.start_run(run_name=study_name):
             "training_approach": "supervised",
             "optimizer_engine": "optuna",
             "best_trial_number": study.best_trial.number,
+            "best_run_id": study.best_trial.user_attrs["run_id"],
             "mlflow.note.content": "Hyperparameter optimization run exploring different learning rates, batch sizes and epochs for the label dataset.",
         }
     )
+
+    # add params from best_trial number
+    run = mlflow.get_run(study.best_trial.user_attrs["run_id"])
+    mlflow.log_params(run.data.params)
 
     artifact_path = "model"
 
