@@ -40,7 +40,7 @@ def get_or_create_experiment(experiment_name):
         return mlflow.create_experiment(experiment_name)
 
 
-experiment_id = get_or_create_experiment("mean_teacher_iris_supervised")
+experiment_id = get_or_create_experiment("mean_teacher_iris_semi_supervised")
 mlflow.set_experiment(experiment_id=experiment_id)
 mlflow_storage = MlflowStorage(experiment_id=experiment_id)
 
@@ -103,93 +103,6 @@ def load_data(train_batch: int):
     return train_loader, val_loader, test_loader, unlabeled_loader
 
 
-# Apply the decorator to your objective function
-
-
-def objective_normal(trial):
-    with mlflow.start_run(
-        nested=True,
-        run_name=f"trial_{trial.number}",
-    ):
-        trial.set_user_attr("run_id", mlflow.active_run().info.run_id)
-        params = {
-            "batch_size_train": trial.suggest_categorical(
-                "batch_size_train", [16, 32, 64, 128, 256, 512, 1024]
-            ),
-            "lr": trial.suggest_float("lr", 1e-5, 1e-1, log=True),
-            "num_epochs": trial.suggest_int("num_epochs", 50, 500),
-        }
-        params["T_max"] = trial.suggest_int("T_max", 10, params["num_epochs"] // 2)
-        mlflow.log_params(params)
-        mlflow.set_tag(
-            "mlflow.note.content",
-            f"Trial {trial.number}: Hyperparameter optimization run exploring different learning rates, batch sizes and epochs.",
-        )
-        device = (
-            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        )
-        train_loader, val_loader, _, _ = load_data(params["batch_size_train"])
-        input_size = 4
-        output_size = 3
-        model = SimpleNN(input_size, output_size)
-        loss_function = nn.CrossEntropyLoss()
-        optimizer = optim.Adam(model.parameters(), lr=params["lr"])
-        scheduler = CosineAnnealingLR(optimizer, T_max=params["T_max"])
-        model.to(device)
-        for epoch in range(params["num_epochs"]):
-            # Training
-            model.train()
-            correct_train = 0
-            total_train = 0
-            for inputs, labels in train_loader:
-                inputs, labels = inputs.to(device), labels.to(device)
-                optimizer.zero_grad()
-                outputs = model(inputs)
-                _, predicted_train = torch.max(outputs.data, 1)
-                total_train += labels.size(0)
-                correct_train += (predicted_train == labels).sum().item()
-                loss = loss_function(outputs, labels)
-                loss.backward()
-                optimizer.step()
-            scheduler.step()
-            train_accuracy = correct_train / total_train
-
-            # Evaluate on validation set
-            model.eval()
-            correct_val = 0
-            total_val = 0
-            with torch.no_grad():
-                for val_inputs, val_labels in val_loader:
-                    val_inputs, val_labels = (
-                        val_inputs.to(device),
-                        val_labels.to(device),
-                    )
-                    val_outputs = model(val_inputs)
-                    _, predicted_val = torch.max(val_outputs.data, 1)
-                    total_val += val_labels.size(0)
-                    correct_val += (predicted_val == val_labels).sum().item()
-            validation_accuracy = correct_val / total_val
-            trial.report(validation_accuracy, epoch)
-
-            if trial.should_prune():
-                mlflow.log_metric("train accuracy", train_accuracy)
-                mlflow.log_metric("validation accuracy", validation_accuracy)
-                mlflow.end_run(status="KILLED")
-                raise optuna.TrialPruned()
-
-        mlflow.log_metric("train accuracy", train_accuracy)
-        mlflow.log_metric("validation accuracy", validation_accuracy)
-        signature = infer_signature(
-            inputs.detach().cpu().numpy(), outputs.detach().cpu().numpy()
-        )
-        mlflow.pytorch.log_model(
-            pytorch_model=model,
-            name="model",
-            signature=signature,
-        )
-
-        return validation_accuracy
-
 
 def champion_callback(study, trial):
     # Check if the trial is the new champion (best trial overall)
@@ -206,6 +119,137 @@ def champion_callback(study, trial):
         # Register this specific model artifact to the MLflow Model Registry
         mlflow.register_model(model_uri=logged_model_uri, name="SupervisedIrisModel")
         print("Champion model registered to the MLflow Model Registry.")
+
+
+def update_teacher_weights(student_model, teacher_model, alpha=0.99):
+    for teacher_param, student_param in zip(
+        teacher_model.parameters(), student_model.parameters()
+    ):
+        teacher_param.data.mul_(alpha).add_(student_param.data, alpha=1 - alpha)
+
+def linear_rampup(current, rampup_length):
+    if rampup_length == 0:
+        return 1.0
+    else:
+        current = np.clip(current, 0.0, rampup_length)
+        return current / rampup_length
+
+def objective_mean_teacher(trial):
+    with mlflow.start_run(
+        nested=True,
+        run_name=f"trial_{trial.number}",
+    ):
+        # get best parameters from the mean_teacher_iris_supervised registered model
+        best_model_params = mlflow.registered_model.get_model("SupervisedIrisModel").params
+        trial.set_user_attr("run_id", mlflow.active_run().info.run_id)
+        params = {
+            "batch_size_train": best_model_params["batch_size_train"],
+            "lr": best_model_params["lr"],
+            "num_epochs": best_model_params["num_epochs"],
+            "T_max": best_model_params["T_max"],
+            "alpha": trial.suggest_float("alpha", 0.80, 0.999),
+            "lambda_u": trial.suggest_float("lambda_u", 1, 100),
+            "max_rampup_epochs": trial.suggest_int("max_rampup_epochs", best_model_params["num_epochs"] // 10, best_model_params["num_epochs"] // 4),
+        }
+        mlflow.log_params(params)
+        mlflow.set_tag(
+            "mlflow.note.content",
+            f"Trial {trial.number}: Hyperparameter optimization run exploring for mean teacher.",
+        )
+        device = (
+            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        )
+        input_size = 4
+        output_size = 3
+        student_model = SimpleNN(input_size, output_size)
+        teacher_model = copy.deepcopy(student_model)
+        # The teacher model should not have its gradients calculated
+        for param in teacher_model.parameters():
+            param.requires_grad = False
+        supervised_loss_fn = nn.CrossEntropyLoss()
+        consistency_loss_fn = nn.MSELoss()
+        train_loader, val_loader, _, unlabeled_loader = load_data(
+            params["batch_size_train"]
+        )
+        
+        student_model.to(device)
+        teacher_model.to(device)
+        optimizer = optim.Adam(student_model.parameters(), lr=params["lr"])
+
+        scheduler = CosineAnnealingLR(optimizer, T_max=params["num_epochs"])
+        for epoch in range(params["num_epochs"]):
+            student_model.train()
+            correct_train = 0
+            total_train = 0
+            for (labeled_data, labeled_labels), (unlabeled_data, _) in zip(
+                cycle(train_loader), unlabeled_loader
+            ):
+                labeled_data, labeled_labels = labeled_data.to(device), labeled_labels.to(
+                    device
+                )
+                # Supervised loss
+                labeled_outputs = student_model(labeled_data)
+                supervised_loss = supervised_loss_fn(labeled_outputs, labeled_labels)
+                _, predicted_train = torch.max(labeled_outputs.data, 1)
+                total_train += labeled_labels.size(0)
+                correct_train += (predicted_train == labeled_labels).sum().item()
+                # 1. Weakly augmented view for the TEACHER
+                unlabeled_data_teacher = add_gaussian_noise(unlabeled_data, std=0.05)
+
+                # 2. Strongly augmented view for the STUDENT
+                unlabeled_data_student = add_gaussian_noise(unlabeled_data, std=0.15)
+
+                # Consistency loss
+                with torch.no_grad():
+                    teacher_outputs = teacher_model(unlabeled_data_teacher)
+                student_outputs_unlabeled = student_model(unlabeled_data_student)
+                consistency_loss = consistency_loss_fn(
+                    student_outputs_unlabeled, teacher_outputs
+                )
+
+                total_loss = supervised_loss + linear_rampup(epoch, params["max_rampup_epochs"]) * params[
+                    "lambda_u"
+                ] * consistency_loss
+
+                optimizer.zero_grad()
+                total_loss.backward()
+                optimizer.step()
+
+                # Update teacher model's weights using EMA
+                update_teacher_weights(student_model, teacher_model, params["alpha"])
+                
+            scheduler.step()
+            train_accuracy = correct_train / total_train
+            # Evaluate on validation set
+            student_model.eval()
+            correct_val = 0
+            total_val = 0
+            with torch.no_grad():
+                for val_inputs, val_labels in val_loader:
+                    val_inputs, val_labels = val_inputs.to(device), val_labels.to(device)
+                    val_outputs = student_model(val_inputs)
+                    _, predicted_val = torch.max(val_outputs.data, 1)
+                    total_val += val_labels.size(0)
+                    correct_val += (predicted_val == val_labels).sum().item()
+            validation_accuracy = correct_val / total_val
+            trial.report(validation_accuracy, epoch)
+
+            if trial.should_prune():
+                mlflow.log_metric("train accuracy", train_accuracy)
+                mlflow.log_metric("validation accuracy", validation_accuracy)
+                mlflow.end_run(status="KILLED")
+                raise optuna.TrialPruned()
+
+        mlflow.log_metric("train accuracy", train_accuracy)
+        mlflow.log_metric("validation accuracy", validation_accuracy)
+        signature = infer_signature(
+            labeled_data.detach().cpu().numpy(), labeled_outputs.detach().cpu().numpy()
+        )
+        mlflow.pytorch.log_model(
+            pytorch_model=student_model,
+            name="model",
+            signature=signature,
+        )
 
 
 # Set the current active MLflow experiment
@@ -251,4 +295,4 @@ with mlflow.start_run(run_name=study_name):
     
     # link the best model in the registry to this parent run
     best_model_uri = f"runs:/{best_run_id}/model"
-    mlflow.set_tag("best_model_artifact_uri", best_model_uri)
+    mlflow.log_artifact(local_path=best_model_uri, artifact_path="best_model")
