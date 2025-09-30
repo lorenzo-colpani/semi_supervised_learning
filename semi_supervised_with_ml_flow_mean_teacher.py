@@ -105,20 +105,21 @@ def load_data(train_batch: int):
 
 
 def champion_callback(study, trial):
-    # Check if the trial is the new champion (best trial overall)
-    # This check is safe because it's run *after* the trial is finished
-    if trial.number == study.best_trial.number:
-        print(f"Trial {trial.number} is the new champion with value: {trial.value}")
+    try:
+        if trial.number == study.best_trial.number:
+            print(f"Trial {trial.number} is the new champion with value: {trial.value}")
 
-        # Get the run ID of the champion trial from its user attributes
-        run_id = trial.user_attrs["run_id"]
+            # Get the run ID of the champion trial from its user attributes
+            run_id = trial.user_attrs["run_id"]
 
-        # Define the URI for the logged model artifact
-        logged_model_uri = f"runs:/{run_id}/model"
+            # Define the URI for the logged model artifact
+            logged_model_uri = f"runs:/{run_id}/model"
 
-        # Register this specific model artifact to the MLflow Model Registry
-        mlflow.register_model(model_uri=logged_model_uri, name="SupervisedIrisModel")
-        print("Champion model registered to the MLflow Model Registry.")
+            # Register this specific model artifact to the MLflow Model Registry
+            mlflow.register_model(model_uri=logged_model_uri, name="SemiSupervisedIrisModel")
+            print("Champion model registered to the MLflow Model Registry.")
+    except Exception as e:
+        pass
 
 
 def update_teacher_weights(student_model, teacher_model, alpha=0.99):
@@ -135,12 +136,12 @@ def linear_rampup(current, rampup_length):
         return current / rampup_length
 
 def objective_mean_teacher(trial):
+    # get best parameters from the mean_teacher_iris_supervised registered model
+    global best_model_params
     with mlflow.start_run(
         nested=True,
         run_name=f"trial_{trial.number}",
-    ):
-        # get best parameters from the mean_teacher_iris_supervised registered model
-        best_model_params = mlflow.registered_model.get_model("SupervisedIrisModel").params
+    ):        
         trial.set_user_attr("run_id", mlflow.active_run().info.run_id)
         params = {
             "batch_size_train": best_model_params["batch_size_train"],
@@ -250,6 +251,7 @@ def objective_mean_teacher(trial):
             name="model",
             signature=signature,
         )
+        return validation_accuracy
 
 
 # Set the current active MLflow experiment
@@ -259,7 +261,7 @@ def objective_mean_teacher(trial):
 
 # 1. Define the storage location and a name for your study
 storage_name = "sqlite:///my_optuna_study.db"
-study_name = "supervised_iris_study"
+study_name = "semi_supervised_iris_study"
 pruner = MedianPruner(n_startup_trials=5, n_warmup_steps=30, interval_steps=10)
 # Create a study object and specify the direction is to maximize accuracy.
 study = optuna.create_study(
@@ -271,20 +273,28 @@ study = optuna.create_study(
 )
 
 # Start the optimization. Optuna will run the objective function 100 times.
+client = mlflow.MlflowClient()
+
+model_version = client.get_model_version_by_alias(
+    name="SupervisedIrisModel"
+    , alias="champion"
+)
+best_model_params = client.get_run(model_version.run_id).data.params
+best_model_params = {k: int(v) if k in ["batch_size_train", "num_epochs", "T_max"] else float(v) for k, v in best_model_params.items()}
 with mlflow.start_run(run_name=study_name):
-    study.optimize(objective_normal, n_trials=100, callbacks=[champion_callback])
+    study.optimize(objective_mean_teacher, n_trials=100, callbacks=[champion_callback])
     mlflow.log_metric("best_accuracy_validation", study.best_value)
     mlflow.set_tags(
         tags={
-            "model": "SupervisedIrisModel",
+            "model": "SemiSupervisedIrisModel",
             "dataset": "Iris",
             "task": "classification",
             "framework": "pytorch",
-            "training_approach": "supervised",
+            "training_approach": "semi_supervised",
             "optimizer_engine": "optuna",
             "best_trial_number": study.best_trial.number,
             "best_run_id": study.best_trial.user_attrs["run_id"],
-            "mlflow.note.content": "Hyperparameter optimization run exploring different learning rates, batch sizes and epochs for the label dataset.",
+            "mlflow.note.content": "Hyperparameter optimization run for mean teacher.",
         }
     )
 
@@ -295,4 +305,8 @@ with mlflow.start_run(run_name=study_name):
     
     # link the best model in the registry to this parent run
     best_model_uri = f"runs:/{best_run_id}/model"
-    mlflow.log_artifact(local_path=best_model_uri, artifact_path="best_model")
+    mlflow.set_tag("best_model_artifact_uri", best_model_uri)
+    
+    # add the alias "champion" to the best model latest version
+    model_version = client.get_latest_model_version(name="SemiSupervisedIrisModel", stages=["None"])
+    client.set_registered_model_alias(name="SemiSupervisedIrisModel", alias="champion", version=model_version.version)
