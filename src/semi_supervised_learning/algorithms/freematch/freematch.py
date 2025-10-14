@@ -186,7 +186,8 @@ if __name__ == "__main__":
         num_gpus=1,
         runtime_env={
             "excludes": [
-                "/home/lorenzo/projects/semi_supervised_learning/data/synthetic_dataset.parquet"
+                "/home/lorenzo/projects/semi_supervised_learning/data/synthetic_dataset.parquet",
+                ".git",
             ]
         },
     )
@@ -239,7 +240,7 @@ if __name__ == "__main__":
     }
 
     scaling_config = ScalingConfig(
-        num_workers=0, use_gpu=True, resources_per_worker={"CPU": 8, "GPU": 1}
+        num_workers=1, use_gpu=True, resources_per_worker={"CPU": 8, "GPU": 1}
     )
 
     trainer = TorchTrainer(

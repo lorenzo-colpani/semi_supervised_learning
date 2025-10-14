@@ -6,10 +6,10 @@ from torchmetrics import MatthewsCorrCoef
 from torchmetrics.classification import BinaryAccuracy
 
 # Define the path to your saved model file
-model_path = "/home/lorenzo/ray_results/my_model/my_train_run/TorchTrainer_e4bbc_00000_0_2025-10-14_23-43-59/checkpoint_000049/model.pth"
+model_path = "/home/lorenzo/ray_results/my_model/my_train_run/TorchTrainer_f98c7_00000_0_2025-10-15_01-17-38/checkpoint_000049/model.pth"
 config = {
     "batch_size": 64,
-    "input_size": 10,
+    "input_size": 250,
     "lr": 0.001,
     "weight_decay": 0.0001,
     "num_epochs": 50,
@@ -18,9 +18,8 @@ config = {
     "w_f": 0.5,
     "ema_decay": 0.999,
     "binary": True,
-    "input_dim": 20,
-    "hidden_layers": [64, 32],
-    "n_layers": 2,
+    "hidden_layers": [128, 64, 32],
+    "n_layers": 3,
     "dropout_rate": 0.5,
     "output_size": 1,
 }  # Instantiate your model
@@ -38,7 +37,7 @@ model.eval()
 dataset = pl.read_parquet("./data/synthetic_dataset.parquet")
 dataset = dataset.to_torch(
     label=pl.col("label").cast(pl.Int32),
-    features=pl.col("features").cast(pl.Array(pl.Float32, 10)),
+    features=pl.col("features").cast(pl.Array(pl.Float32, 250)),
     return_type="dataset",
 )
 inference_dataloader = DataLoader(
@@ -55,3 +54,4 @@ for features, label in inference_dataloader:
     accuracy.update(output, labels)
 print("Matthews correlation coefficient:", matt.compute().item())
 print("Accuracy:", accuracy.compute().item())
+
