@@ -2,3 +2,4 @@ venv/
 mlartifacts/
 .venv/
 mlruns/
+data/
