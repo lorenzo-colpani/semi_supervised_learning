@@ -57,8 +57,8 @@ def generate_dataloader(data, n_batch: int = 32, shuffle: bool = True):
 if __name__ == "__main__":
     if overwrite := True:
         generate_synthetic_dataset(
-            n_samples=10_000, n_features=10, n_classes=1, weights=[0.9]
+            n_samples=1_000_000, n_features=250, n_classes=2, weights=[0.99]
         )
 
     df = pl.read_parquet("./data/synthetic_dataset.parquet")
-    print(df.head(5))
+    print(df.group_by(pl.col("label")).agg(pl.count()))

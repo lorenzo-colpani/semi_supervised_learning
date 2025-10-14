@@ -55,4 +55,3 @@ for features, label in inference_dataloader:
     accuracy.update(output, labels)
 print("Matthews correlation coefficient:", matt.compute().item())
 print("Accuracy:", accuracy.compute().item())
-

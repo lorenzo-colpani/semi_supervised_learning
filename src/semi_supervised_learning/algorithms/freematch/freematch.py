@@ -10,6 +10,7 @@ from torch import nn
 import polars as pl
 from torchmetrics import MatthewsCorrCoef
 import tempfile
+from itertools import cycle
 
 from semi_supervised_learning.utils.dynamic_nn import DynamicNN
 from semi_supervised_learning.utils.utils import (
@@ -82,12 +83,10 @@ def train_freematch(
         running_total = torch.tensor(0.0).to(device)
 
         model.train()
-        for label_batch, unlabeled_batch in zip(
-            label_train_loader, unlabel_train_loader
-        ):
-            features_l = label_batch["features"].to(device)
-            label_l = label_batch["label"].unsqueeze(-1).to(device)
-            features_u = unlabeled_batch["features"].to(device)
+        for batch_l, batch_u in zip(cycle(label_train_loader), unlabel_train_loader):
+            features_l = batch_l["features"].to(device)
+            label_l = batch_l["label"].unsqueeze(-1).to(device)
+            features_u = batch_u["features"].to(device)
 
             optimizer.zero_grad()
             # supervised loss
@@ -183,26 +182,49 @@ def train_freematch(
 
 if __name__ == "__main__":
     os.environ["RAY_TMPDIR"] = "/home/lorenzo/tmp/ray"
-    ray.init(num_gpus=1)
+    ray.init(
+        num_gpus=1,
+        runtime_env={
+            "excludes": [
+                "/home/lorenzo/projects/semi_supervised_learning/data/synthetic_dataset.parquet"
+            ]
+        },
+    )
 
-    dataset = pl.read_parquet("./data/synthetic_dataset.parquet")
-    # Define the split ratio
-    split_ratio = 0.1
-    n_rows = dataset.height
-    split_point = int(n_rows * split_ratio)
+    dataset = (
+        pl.read_parquet("./data/synthetic_dataset.parquet")
+        .sample(fraction=1, shuffle=True, seed=42)
+        .with_row_index()
+    )
+    # Define the split ratio, get 5 labels for each class
+    # find 5 indices for each class
+    class_0_indices = (
+        dataset.filter(pl.col("label") == 0)
+        .head(5)
+        .select("index")
+        .to_series()
+        .to_list()
+    )
+    class_1_indices = (
+        dataset.filter(pl.col("label") == 1)
+        .head(5)
+        .select("index")
+        .to_series()
+        .to_list()
+    )
 
-    # Shuffle the DataFrame first
-    shuffled_df = dataset.sample(fraction=1.0, shuffle=True)
-
-    # Split the shuffled DataFrame into training and testing sets
-    dataset_label = shuffled_df.slice(0, split_point)
-    dataset_unlabel = shuffled_df.slice(split_point, n_rows - split_point)
+    dataset_label = dataset.filter(
+        pl.col("index").is_in(class_0_indices + class_1_indices)
+    ).drop("index")
+    dataset_unlabel = dataset.filter(
+        ~pl.col("index").is_in(class_0_indices + class_1_indices)
+    ).drop("index")
     dataset_label = ray.data.from_arrow(dataset_label.to_arrow())
     dataset_unlabel = ray.data.from_arrow(dataset_unlabel.to_arrow())
 
     config = {
         "batch_size": 64,
-        "input_size": 10,
+        "input_size": 250,
         "lr": 0.001,
         "weight_decay": 0.0001,
         "num_epochs": 50,
@@ -211,13 +233,14 @@ if __name__ == "__main__":
         "w_f": 0.5,
         "ema_decay": 0.999,
         "binary": True,
-        "input_dim": 20,
-        "hidden_layers": [64, 32],
-        "n_layers": 2,
+        "hidden_layers": [128, 64, 32],
+        "n_layers": 3,
         "dropout_rate": 0.5,
     }
 
-    scaling_config = ScalingConfig(num_workers=1, use_gpu=True)
+    scaling_config = ScalingConfig(
+        num_workers=0, use_gpu=True, resources_per_worker={"CPU": 8, "GPU": 1}
+    )
 
     trainer = TorchTrainer(
         train_loop_per_worker=train_freematch,
