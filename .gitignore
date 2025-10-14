@@ -3,3 +3,4 @@ mlartifacts/
 .venv/
 mlruns/
 data/
+tmp/
