@@ -1,5 +1,5 @@
 [project]
-name = "semi-supervised-learning"
+name = "semi_supervised_learning"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -13,14 +13,12 @@ dependencies = [
   "pip>=25.2",
   "plotly>=6.3.0",
   "polars>=1.34.0",
-  "ray>=2.50.0",
+  "ray[tune]>=2.50.0",
   "scikit-learn>=1.7.2",
   "tensorboard>=2.20.0",
   "torch>=2.8.0",
   "torchmetrics>=1.8.2",
   "torchvision>=0.23.0",
 ]
-
-[tool.setuptools.packages.find]
-where = ["./src"]
-include = ["semi_supervised_learning"]
+[tool.uv]
+package = true

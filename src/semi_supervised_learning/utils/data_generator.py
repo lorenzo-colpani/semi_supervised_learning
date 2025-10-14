@@ -30,12 +30,8 @@ def generate_synthetic_dataset(
             n_samples=n_samples, n_features=n_features, n_classes=n_classes
         )
     )
-    # create a polars dataframe features named x and labels named y
-    df = pl.DataFrame(
-        np.hstack((X, y.reshape(-1, 1))),
-        schema=[f"x{i}" for i in range(X.shape[1])] + ["y"],
-    )
-
+    # create a polars dataframe features  and label
+    df = pl.DataFrame({"features": X, "label": y})
     # save as a parquet file
     df.write_parquet("./data/synthetic_dataset.parquet")
 
@@ -59,14 +55,10 @@ def generate_dataloader(data, n_batch: int = 32, shuffle: bool = True):
 
 
 if __name__ == "__main__":
-    ray.init(num_gpus=1)
-    if overwrite := False:
+    if overwrite := True:
         generate_synthetic_dataset(
-            n_samples=1000, n_features=10, n_classes=2, weights=[0.9, 0.1]
+            n_samples=10_000, n_features=10, n_classes=1, weights=[0.9]
         )
-    dataset_train = ray.data.from_arrow(
-        pl.read_parquet("./data/synthetic_dataset.parquet").to_arrow()
-    )
-    for batch in dataset_train.iter_torch_batches(batch_size=8, dtypes=torch.float32):
-        print(batch)
-        break
+
+    df = pl.read_parquet("./data/synthetic_dataset.parquet")
+    print(df.head(5))

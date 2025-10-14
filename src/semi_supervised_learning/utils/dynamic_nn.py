@@ -11,12 +11,12 @@ class DynamicNN(nn.Module):
         output_size = config["output_size"]
         self.dropout_rate = config.get("dropout_rate", 0.5)
 
-        first_layer = nn.Linear(input_size, config["hidden_layer"][0])
+        first_layer = nn.Linear(input_size, config["hidden_layers"][0])
         self.layers.append(first_layer)
         for i in range(1, config["n_layers"] + 1):
-            in_features = config["neurons"][i - 1]
+            in_features = config["hidden_layers"][i - 1]
             out_features = (
-                output_size if i == config["n_layers"] else config["hidden_layer"][i]
+                output_size if i == config["n_layers"] else config["hidden_layers"][i]
             )
             self.layers.append(nn.Linear(in_features, out_features))
 

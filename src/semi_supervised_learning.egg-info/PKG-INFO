@@ -1,0 +1,22 @@
+Metadata-Version: 2.4
+Name: semi_supervised_learning
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: >=3.13
+Description-Content-Type: text/markdown
+Requires-Dist: ipykernel>=6.30.1
+Requires-Dist: matplotlib>=3.10.6
+Requires-Dist: mlflow>=3.4.0
+Requires-Dist: optuna>=4.5.0
+Requires-Dist: optuna-integration>=4.5.0
+Requires-Dist: pip>=25.2
+Requires-Dist: plotly>=6.3.0
+Requires-Dist: polars>=1.34.0
+Requires-Dist: ray[tune]>=2.50.0
+Requires-Dist: scikit-learn>=1.7.2
+Requires-Dist: tensorboard>=2.20.0
+Requires-Dist: torch>=2.8.0
+Requires-Dist: torchmetrics>=1.8.2
+Requires-Dist: torchvision>=0.23.0
+
+test
